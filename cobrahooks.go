@@ -12,6 +12,10 @@ type Command struct {
 	*cobra.Command
 }
 
+func NewCommand(c *cobra.Command) *Command {
+	return &Command{c}
+}
+
 type commandHook struct {
 	cmd  *cobra.Command
 	hook func(cmd *cobra.Command, args []string) error
