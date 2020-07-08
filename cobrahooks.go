@@ -17,9 +17,10 @@ func NewCommand(c *cobra.Command) *Command {
 }
 
 type commandHook struct {
-	cmd       *cobra.Command
-	hook      func(cmd *cobra.Command, args []string) error
-	runOnHelp bool
+	cmd        *cobra.Command
+	hook       func(cmd *cobra.Command, args []string) error
+	runOnHelp  bool
+	persistent bool
 }
 
 var (
@@ -31,12 +32,16 @@ var (
 	helpHooks              []*commandHook
 )
 
-type RunOptions struct {
-	runOnHelp bool
+type HookOptions struct {
+	runOnHelp  bool
+	persistent bool
 }
 
-func RunOnHelp(o *RunOptions) { o.runOnHelp = true }
+func RunOnHelp(o *HookOptions) { o.runOnHelp = true }
 
+func Persistent(o *HookOptions) { o.persistent = true }
+
+// OnRun registers a Run hook onto the command.
 func (c *Command) OnRun(h func(cmd *cobra.Command, args []string) error) {
 	OnRun(c.Command, h)
 }
@@ -64,15 +69,31 @@ func OnRun(c *cobra.Command, h func(cmd *cobra.Command, args []string) error) {
 	}
 }
 
-func (c *Command) OnPreRun(h func(cmd *cobra.Command, args []string) error) {
-	OnPreRun(c.Command, h)
+func runPreRunHooks(cmd *cobra.Command, args []string, isHelpRun bool) error {
+	for _, ch := range preRunHooks {
+		if ch.cmd == cmd && (!isHelpRun || ch.runOnHelp) {
+			if err := ch.hook(cmd, args); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // OnPreRun registers a PreRun hook on the command.
-func OnPreRun(c *cobra.Command, h func(cmd *cobra.Command, args []string) error, options ...func(*RunOptions)) {
-	var opts RunOptions
+func (c *Command) OnPreRun(h func(cmd *cobra.Command, args []string) error, options ...func(*HookOptions)) {
+	OnPreRun(c.Command, h, options...)
+}
+
+// OnPreRun registers a PreRun hook on the command.
+func OnPreRun(c *cobra.Command, h func(cmd *cobra.Command, args []string) error, options ...func(*HookOptions)) {
+	var opts HookOptions
 	for _, option := range options {
 		option(&opts)
+	}
+	if opts.persistent {
+		OnPersistentPreRun(c, h, options...)
+		return
 	}
 	// Register the hook
 	preRunHooks = append(preRunHooks, &commandHook{
@@ -80,30 +101,31 @@ func OnPreRun(c *cobra.Command, h func(cmd *cobra.Command, args []string) error,
 		hook: h,
 	})
 	if opts.runOnHelp {
-		runPreRunOnHelp(c)
+		initHelpHooks(c)
 	}
 	if c.PreRunE != nil {
 		return
 	}
 	c.PreRunE = func(cmd *cobra.Command, args []string) error {
-		// find and execute any registered PreRun hooks
-		for _, ch := range preRunHooks {
-			if ch.cmd == cmd {
-				if err := ch.hook(cmd, args); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
+		return runPreRunHooks(cmd, args, false)
 	}
 }
 
-func (c *Command) OnPostRun(h func(cmd *cobra.Command, args []string) error) {
-	OnPostRun(c.Command, h)
+// OnPostRun registers a PostRun hook on the command.
+func (c *Command) OnPostRun(h func(cmd *cobra.Command, args []string) error, options ...func(*HookOptions)) {
+	OnPostRun(c.Command, h, options...)
 }
 
 // OnPostRun registers a PostRun hook on the command.
-func OnPostRun(c *cobra.Command, h func(cmd *cobra.Command, args []string) error) {
+func OnPostRun(c *cobra.Command, h func(cmd *cobra.Command, args []string) error, options ...func(*HookOptions)) {
+	var opts HookOptions
+	for _, option := range options {
+		option(&opts)
+	}
+	if opts.persistent {
+		OnPersistentPostRun(c, h)
+		return
+	}
 	// Register the hook
 	postRunHooks = append(postRunHooks, &commandHook{
 		cmd:  c,
@@ -125,13 +147,36 @@ func OnPostRun(c *cobra.Command, h func(cmd *cobra.Command, args []string) error
 	}
 }
 
-func (c *Command) OnPersistentPreRun(h func(cmd *cobra.Command, args []string) error) {
-	OnPersistentPreRun(c.Command, h)
+func runPersistentPreRunHooks(cmd *cobra.Command, args []string, isHelpRun bool) error {
+	var runChain []*commandHook
+	// Walk up the command chain
+	for p := cmd; p != nil; p = p.Parent() {
+		// find any registered PersistentPreRun hooks and build the run chain
+		for _, ch := range persistentPreRunHooks {
+			if ch.cmd == p && (!isHelpRun || ch.runOnHelp) {
+				runChain = append(runChain, &commandHook{
+					hook: ch.hook,
+				})
+			}
+		}
+	}
+	// Run the command chain hooks from parent to child
+	for i := len(runChain) - 1; i >= 0; i-- {
+		if err := runChain[i].hook(cmd, args); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // OnPersistentPostRun registers a PreRun hook on the command and all of its childs
-func OnPersistentPreRun(c *cobra.Command, h func(cmd *cobra.Command, args []string) error, options ...func(*RunOptions)) {
-	var opts RunOptions
+func (c *Command) OnPersistentPreRun(h func(cmd *cobra.Command, args []string) error, options ...func(*HookOptions)) {
+	OnPersistentPreRun(c.Command, h, options...)
+}
+
+// OnPersistentPostRun registers a PreRun hook on the command and all of its childs
+func OnPersistentPreRun(c *cobra.Command, h func(cmd *cobra.Command, args []string) error, options ...func(*HookOptions)) {
+	var opts HookOptions
 	for _, option := range options {
 		option(&opts)
 	}
@@ -141,41 +186,25 @@ func OnPersistentPreRun(c *cobra.Command, h func(cmd *cobra.Command, args []stri
 	// (since the runChain will be executed in reversed order from parent to child)
 	persistentPreRunHooks = append([]*commandHook{
 		&commandHook{
-			cmd:  c,
-			hook: h,
+			cmd:       c,
+			hook:      h,
+			runOnHelp: opts.runOnHelp,
 		},
 	}, persistentPreRunHooks...)
 
 	if opts.runOnHelp {
-		runPersistentPreRunOnHelp(c)
+		initHelpHooks(c)
 	}
 
 	if c.PersistentPreRunE != nil {
 		return
 	}
 	c.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
-		var runChain []*commandHook
-		// Walk up the command chain
-		for p := cmd; p != nil; p = p.Parent() {
-			// find any registered PersistentPreRun hooks and build the run chain
-			for _, ch := range persistentPreRunHooks {
-				if ch.cmd == p {
-					runChain = append(runChain, &commandHook{
-						hook: ch.hook,
-					})
-				}
-			}
-		}
-		// Run the command chain hooks from parent to child
-		for i := len(runChain) - 1; i >= 0; i-- {
-			if err := runChain[i].hook(cmd, args); err != nil {
-				return err
-			}
-		}
-		return nil
+		return runPersistentPreRunHooks(cmd, args, false)
 	}
 }
 
+// OnPersistentPostRun registers a PostRun hook on the command and all of its childs
 func (c *Command) OnPersistentPostRun(h func(cmd *cobra.Command, args []string) error) {
 	OnPersistentPostRun(c.Command, h)
 }
@@ -206,22 +235,15 @@ func OnPersistentPostRun(c *cobra.Command, h func(cmd *cobra.Command, args []str
 	}
 }
 
-func (c *Command) OnHelp(h func(cmd *cobra.Command, args []string) error) {
-	OnHelp(c.Command, h)
+// OnHelp registers a hook when help is invoked for the command
+func (c *Command) OnHelp(h func(cmd *cobra.Command, args []string) error, options ...func(*HookOptions)) {
+	OnHelp(c.Command, h, options...)
 }
 
-var isHelpIntegrated bool
+var isHelpHooksInitialized bool
 
-// OnHelp registers a hook for when help is invoked.
-func OnHelp(c *cobra.Command, h func(cmd *cobra.Command, args []string) error) {
-	// Register the hook
-	helpHooks = append(helpHooks, &commandHook{
-		cmd:  c,
-		hook: h,
-	})
-	// Search if a help hook is already registered for the command.
-	// We don't need to integrate again.
-	if isHelpIntegrated {
+func initHelpHooks(c *cobra.Command) {
+	if isHelpHooksInitialized {
 		return
 	}
 	r := c.Root()
@@ -231,34 +253,37 @@ func OnHelp(c *cobra.Command, h func(cmd *cobra.Command, args []string) error) {
 	// Integrate with the root command
 	helpFunc := r.HelpFunc()
 	r.SetHelpFunc(func(cmd *cobra.Command, args []string) {
-		for _, ch := range helpHooks {
-			if ch.cmd == cmd {
-				if err := ch.hook(cmd, args); err != nil {
-					return
+		for p, isParent := cmd, false; p != nil; p, isParent = p.Parent(), true {
+			for _, ch := range helpHooks {
+				if ch.cmd == p && (!isParent || ch.persistent == true) {
+					if err := ch.hook(cmd, args); err != nil {
+						return
+					}
 				}
 			}
 		}
+		if err := runPersistentPreRunHooks(cmd, args, true); err != nil {
+			return
+		}
+		if err := runPreRunHooks(cmd, args, true); err != nil {
+			return
+		}
 		helpFunc(cmd, args)
 	})
+	isHelpHooksInitialized = true
 }
 
-func runPersistentPreRunOnHelp(c *cobra.Command) {
-	OnHelp(c, func(cmd *cobra.Command, args []string) error {
-		for p := cmd; p != nil; p = p.Parent() {
-			if p.PersistentPreRunE != nil {
-				p.PersistentPreRunE(p, args)
-				break
-			}
-		}
-		return nil
-	})
-}
-
-func runPreRunOnHelp(c *cobra.Command) {
-	OnHelp(c, func(cmd *cobra.Command, args []string) error {
-		if cmd.PreRunE != nil {
-			cmd.PreRunE(cmd, args)
-		}
-		return nil
+// OnHelp registers a hook for when help is invoked.
+func OnHelp(c *cobra.Command, h func(cmd *cobra.Command, args []string) error, options ...func(*HookOptions)) {
+	initHelpHooks(c)
+	var opts HookOptions
+	for _, option := range options {
+		option(&opts)
+	}
+	// Register the hook
+	helpHooks = append(helpHooks, &commandHook{
+		cmd:        c,
+		hook:       h,
+		persistent: opts.persistent,
 	})
 }

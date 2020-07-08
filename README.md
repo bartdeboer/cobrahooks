@@ -1,6 +1,6 @@
 # Cobrahooks
 
-A more versatile hooks layer for [Cobra](https://github.com/spf13/cobra). It allows to register multiple hooks for cobra commands. Also ensures persistent hooks are persistently executed.
+A more versatile hooks layer for [Cobra](https://github.com/spf13/cobra). It allows to register multiple hooks for cobra commands and ensures persistent hooks are persistently executed.
 
 ```go
 parentCmd := &Command{
@@ -9,13 +9,11 @@ parentCmd := &Command{
     },
 }
 
-childCmd := &Command{
-    &cobra.Command{
-        Use: "child",
-    },
+childCmd := &cobra.Command{
+    Use: "child",
 }
 
-parentCmd.AddCommand(childCmd.Command)
+parentCmd.AddCommand(childCmd)
 
 parentCmd.OnPersistentPreRun(func(_ *cobra.Command, args []string) error {
     fmt.Println("Your external behavior")
