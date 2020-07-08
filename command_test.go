@@ -317,55 +317,55 @@ func TestHelpCommandExecutedOnChild(t *testing.T) {
 	rootCmd.AddCommand(childCmd.Command)
 	childCmd.AddCommand(grandChildCmd.Command)
 
-	var rootFlagValue string
+	var (
+		rootFlagValue       string
+		childFlagValue      string
+		grandChildFlagValue string
+		grandChildHelpTest  string
+	)
+
 	childCmd.PersistentFlags().StringVarP(&rootFlagValue, "root-flag", "", "", "")
-
-	var childFlagValue string
 	childCmd.PersistentFlags().StringVarP(&childFlagValue, "child-flag", "", "", "")
-
-	var grandChildFlagValue string
 	grandChildCmd.PersistentFlags().StringVarP(&grandChildFlagValue, "grand-child-flag", "", "", "")
-
-	var grandChildHelpTest string
 	grandChildCmd.PersistentFlags().StringVarP(&grandChildHelpTest, "grand-child-help-test", "", "", "")
 
 	rootCmd.OnPersistentPreRun(func(cmd *cobra.Command, args []string) error {
-		cmd.OutOrStdout().Write([]byte("Hello from hook 1"))
+		cmd.OutOrStdout().Write([]byte("Hello from hook 1 "))
 		flag := cmd.Flags().Lookup("root-flag")
 		flag.DefValue = "root new default value"
 		return nil
 	}, RunOnHelp)
 
 	childCmd.OnPersistentPreRun(func(cmd *cobra.Command, args []string) error {
-		cmd.OutOrStdout().Write([]byte("Hello from hook 2"))
+		cmd.OutOrStdout().Write([]byte("Hello from hook 2 "))
 		flag := cmd.Flags().Lookup("child-flag")
 		flag.DefValue = "child new default value"
 		return nil
 	}, RunOnHelp)
 
 	childCmd.OnPreRun(func(cmd *cobra.Command, args []string) error {
-		cmd.OutOrStdout().Write([]byte("Hello from hook 3"))
+		cmd.OutOrStdout().Write([]byte("Hello from hook 3 "))
 		flag := cmd.Flags().Lookup("child-flag")
 		flag.DefValue = "child new default value overwrite"
 		return nil
-	}, RunOnHelp, Persistent)
+	}, RunOnHelp, Persistent) // <- Persistent option
 
 	childCmd.OnPreRun(func(cmd *cobra.Command, args []string) error {
-		cmd.OutOrStdout().Write([]byte("Hello from hook 4"))
+		cmd.OutOrStdout().Write([]byte("Hello from hook 4 "))
 		flag := cmd.Flags().Lookup("child-flag")
 		flag.DefValue = "child new default value should not overwrite"
 		return nil
 	}, RunOnHelp)
 
 	grandChildCmd.OnPersistentPreRun(func(cmd *cobra.Command, args []string) error {
-		cmd.OutOrStdout().Write([]byte("Hello from hook 5"))
+		cmd.OutOrStdout().Write([]byte("Hello from hook 5 "))
 		flag := cmd.Flags().Lookup("grand-child-flag")
 		flag.DefValue = "grandchild new default value"
 		return nil
 	}, RunOnHelp)
 
 	grandChildCmd.OnHelp(func(cmd *cobra.Command, args []string) error {
-		cmd.OutOrStdout().Write([]byte("Hello from hook 6"))
+		cmd.OutOrStdout().Write([]byte("Hello from hook 6 "))
 		flag := cmd.Flags().Lookup("grand-child-help-test")
 		flag.DefValue = "grandchild help test value"
 		return nil
@@ -376,20 +376,28 @@ func TestHelpCommandExecutedOnChild(t *testing.T) {
 		t.Errorf("Unexpected error: %v", err1)
 	}
 
-	checkStringContains(t, output1, "Hello from hook 1")
-	checkStringContains(t, output1, "Hello from hook 2")
-	checkStringContains(t, output1, "Hello from hook 3")
+	checkStringContains(t, output1,
+		"Hello from hook 1 "+
+			"Hello from hook 2 "+
+			"Hello from hook 3 "+
+			"Hello from hook 5 ")
 	checkStringOmits(t, output1, "Hello from hook 4")
-	checkStringContains(t, output1, "Hello from hook 5")
 	checkStringOmits(t, output1, "Hello from hook 6")
 
-	output, err := executeCommand(rootCmd.Command, "child", "grandchild", "--help")
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
+	output2, err2 := executeCommand(rootCmd.Command, "child", "grandchild", "--help")
+	if err2 != nil {
+		t.Errorf("Unexpected error: %v", err2)
 	}
 
-	checkStringContains(t, output, "(default \"root new default value\")")
-	checkStringContains(t, output, "(default \"child new default value overwrite\")")
-	checkStringContains(t, output, "(default \"grandchild new default value\")")
-	checkStringContains(t, output, "(default \"grandchild help test value\")")
+	checkStringContains(t, output2,
+		"Hello from hook 1 "+
+			"Hello from hook 2 "+
+			"Hello from hook 3 "+
+			"Hello from hook 5 "+
+			"Hello from hook 6 ")
+	checkStringOmits(t, output2, "Hello from hook 4")
+	checkStringContains(t, output2, "(default \"root new default value\")")
+	checkStringContains(t, output2, "(default \"child new default value overwrite\")")
+	checkStringContains(t, output2, "(default \"grandchild new default value\")")
+	checkStringContains(t, output2, "(default \"grandchild help test value\")")
 }

@@ -253,6 +253,12 @@ func initHelpHooks(c *cobra.Command) {
 	// Integrate with the root command
 	helpFunc := r.HelpFunc()
 	r.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		if err := runPersistentPreRunHooks(cmd, args, true); err != nil {
+			return
+		}
+		if err := runPreRunHooks(cmd, args, true); err != nil {
+			return
+		}
 		for p, isParent := cmd, false; p != nil; p, isParent = p.Parent(), true {
 			for _, ch := range helpHooks {
 				if ch.cmd == p && (!isParent || ch.persistent == true) {
@@ -261,12 +267,6 @@ func initHelpHooks(c *cobra.Command) {
 					}
 				}
 			}
-		}
-		if err := runPersistentPreRunHooks(cmd, args, true); err != nil {
-			return
-		}
-		if err := runPreRunHooks(cmd, args, true); err != nil {
-			return
 		}
 		helpFunc(cmd, args)
 	})
